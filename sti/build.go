@@ -37,6 +37,7 @@ type STIRequest struct {
 	Writer              io.Writer
 	CallbackUrl         string
 	ScriptsUrl          string
+	VolumesFrom         string
 
 	incremental bool
 	usage       bool
@@ -81,11 +82,15 @@ func Build(req *STIRequest) (result *STIResult, err error) {
 		return nil, err
 	}
 
-	h.request.workingDir, err = createWorkingDirectory()
+	if len(req.VolumesFrom) > 0 {
+		h.request.workingDir = "/tmp"
+	} else {
+		h.request.workingDir, err = createWorkingDirectory()
+	}
 	if err != nil {
 		return nil, err
 	}
-	if h.request.PreserveWorkingDir {
+	if h.request.PreserveWorkingDir || len(req.VolumesFrom) > 0 {
 		log.Printf("Temporary directory '%s' will be saved, not deleted\n", h.request.workingDir)
 	} else {
 		defer removeDirectory(h.request.workingDir, h.request.Verbose)
@@ -201,7 +206,10 @@ func (h requestHandler) buildInternal() (messages []string, imageID string, err 
 		cmd = []string{"/bin/sh", "-c", "chmod 700 " + assemblePath + " && " + assemblePath + " && mkdir -p /opt/sti/bin && cp " + runPath + " /opt/sti/bin && chmod 700 /opt/sti/bin/run"}
 	}
 
-	config := docker.Config{User: "root", Image: h.request.BaseImage, Cmd: cmd, Volumes: volumeMap}
+	config := docker.Config{User: "root", Image: h.request.BaseImage, Cmd: cmd}
+	if len(h.request.VolumesFrom) == 0 {
+		config.Volumes = volumeMap
+	}
 
 	var cmdEnv []string
 	if len(h.request.Environment) > 0 {
@@ -228,10 +236,15 @@ func (h requestHandler) buildInternal() (messages []string, imageID string, err 
 	}
 
 	if hasUser {
-		containerInitDir := filepath.Join(h.request.workingDir, "tmp", ContainerInitDirName)
-		err = os.MkdirAll(containerInitDir, 0700)
-		if err != nil {
-			return
+		var containerInitDir string
+		if len(h.request.VolumesFrom) == 0 {
+			containerInitDir = filepath.Join(h.request.workingDir, "tmp", ContainerInitDirName)
+			err = os.MkdirAll(containerInitDir, 0700)
+			if err != nil {
+				return
+			}
+		} else {
+			containerInitDir = ContainerInitDirName
 		}
 
 		err = chcon(SVirtSandboxFileLabel, containerInitDir, true)
@@ -274,7 +287,12 @@ func (h requestHandler) buildInternal() (messages []string, imageID string, err 
 		}
 	}
 
-	hostConfig := docker.HostConfig{Binds: binds}
+	hostConfig := docker.HostConfig{}
+	if len(h.request.VolumesFrom) == 0 {
+		hostConfig.Binds = binds
+	} else {
+		hostConfig.VolumesFrom = []string{h.request.VolumesFrom}
+	}
 	if h.request.Verbose {
 		log.Printf("Starting container with config: %+v\n", hostConfig)
 	}

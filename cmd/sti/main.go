@@ -50,10 +50,10 @@ func Execute() {
 	req = &sti.STIRequest{}
 
 	stiCmd := &cobra.Command{
-		Use:  "sti",
-		Long: "Source-to-images (STI) is a tool for building repeatable docker images.\n\n"+
-			  "A command line interface that injects and assembles an application source into a docker image.\n"+
-			  "Complete documentation is available at http://github.com/openshift/geard/tree/master/sti",
+		Use: "sti",
+		Long: "Source-to-images (STI) is a tool for building repeatable docker images.\n\n" +
+			"A command line interface that injects and assembles an application source into a docker image.\n" +
+			"Complete documentation is available at http://github.com/openshift/geard/tree/master/sti",
 		Run: func(c *cobra.Command, args []string) {
 			c.Help()
 		},
@@ -113,6 +113,7 @@ func Execute() {
 	buildCmd.Flags().StringVarP(&(req.Ref), "ref", "r", "", "Specify a ref to check-out")
 	buildCmd.Flags().StringVar(&(req.CallbackUrl), "callbackUrl", "", "Specify a URL to invoke via HTTP POST upon build completion")
 	buildCmd.Flags().StringVarP(&(req.ScriptsUrl), "scripts", "s", "", "Specify a URL for the assemble and run scripts")
+	buildCmd.Flags().StringVar(&(req.VolumesFrom), "volumesFrom", "", "Use volumes from given container for build")
 
 	stiCmd.AddCommand(buildCmd)
 
