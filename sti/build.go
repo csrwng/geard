@@ -1,9 +1,12 @@
 package sti
 
 import (
+	"archive/tar"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -37,6 +40,7 @@ type STIRequest struct {
 	Writer              io.Writer
 	CallbackUrl         string
 	ScriptsUrl          string
+	VolumeContainer     bool
 
 	incremental bool
 	usage       bool
@@ -274,7 +278,18 @@ func (h requestHandler) buildInternal() (messages []string, imageID string, err 
 		}
 	}
 
-	hostConfig := docker.HostConfig{Binds: binds}
+	var hostConfig docker.HostConfig
+	if h.request.VolumeContainer {
+		var volumeContainer string
+		volumeContainer, err = h.prepareVolumeContainer(binds)
+		if err != nil {
+			err = fmt.Errorf("Unable to create a volume container: %v", err)
+			return
+		}
+		hostConfig = docker.HostConfig{VolumesFrom: []string{volumeContainer}}
+	} else {
+		hostConfig = docker.HostConfig{Binds: binds}
+	}
 	if h.request.Verbose {
 		log.Printf("Starting container with config: %+v\n", hostConfig)
 	}
@@ -358,6 +373,80 @@ func (h requestHandler) buildInternal() (messages []string, imageID string, err 
 	}
 
 	return
+}
+
+func (h requestHandler) prepareVolumeContainer(binds []string) (string, error) {
+	tempFile, err := ioutil.TempFile("", "build-artifacts")
+	if err != nil {
+		return "", err
+	}
+	tarWriter := tar.NewWriter(tempFile)
+	volumeMap := make(map[string]struct{})
+	for _, bind := range binds {
+		dirs := strings.Split(bind, ":")
+		localDir := dirs[0]
+		remoteDir := dirs[1]
+		addDirectoryToTar(localDir, remoteDir, tarWriter)
+		volumeMap[remoteDir] = struct{}{}
+	}
+	tarWriter.Close()
+	tempFile.Close()
+	config := docker.Config{Image: "cewong/untar", Volumes: volumeMap}
+	container, err := h.dockerClient.CreateContainer(docker.CreateContainerOptions{Name: "", Config: &config})
+	if err != nil {
+		return "", err
+	}
+	err = h.dockerClient.StartContainer(container.ID, &docker.HostConfig{})
+	if err != nil {
+		return "", err
+	}
+	container, err = h.dockerClient.InspectContainer(container.ID)
+	if err != nil {
+		return "", err
+	}
+	containerIP := container.NetworkSettings.IPAddress
+	untarURL := fmt.Sprintf("http://%s:9080/untar", containerIP)
+
+	tempFile, err = os.Open(tempFile.Name())
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.Post(untarURL, "application/octet-stream", tempFile)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("Unexpected status code: %d", resp.StatusCode)
+	}
+	err = h.dockerClient.StopContainer(container.ID, 10)
+	if err != nil {
+		return "", err
+	}
+	return container.ID, nil
+}
+
+func addDirectoryToTar(localDir, remoteDir string, tw *tar.Writer) error {
+	filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+		if !info.IsDir() {
+			header, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				return err
+			}
+			tarName := filepath.Join(remoteDir, path[len(localDir):])
+			header.Name = tarName
+			if err = tw.WriteHeader(header); err != nil {
+				return err
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			io.Copy(tw, file)
+		}
+		return nil
+	})
+	return nil
 }
 
 func (h requestHandler) downloadScripts() error {
